@@ -1,0 +1,13 @@
+{
+	"geode": "5.11.2",
+	"gd": {
+		"win": "2.2081",
+		"android": "2.2081"
+	},
+	"id": "harrison.voidbreaker",
+	"name": "Voidbreaker",
+	"version": "v1.0.0",
+	"developer": "harrison",
+	"description": "Hitboxes, trajectory preview, speedhack/TPS changer and a macro recorder in one menu.",
+	"tags": ["utility", "gameplay"]
+}
