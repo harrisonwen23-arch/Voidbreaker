@@ -482,10 +482,10 @@ class $modify(VBBase, GJBaseGameLayer) {
 		return pl && static_cast<GJBaseGameLayer*>(pl) == this;
 	}
 
-	void processCommands(float dt) {
+	void processCommands(float dt, bool isHalfTick, bool isLastTick) {
 		auto& s = vb::S();
 		if (!s.disabled && s.playing && isPlay()) {
-			int frame = m_gameState.m_currentProgress;
+			int frame = static_cast<int>(m_gameState.m_currentProgress);
 			while (s.idx < s.macro.size() && s.macro[s.idx].frame < frame) s.idx++;
 			while (s.idx < s.macro.size() && s.macro[s.idx].frame == frame) {
 				auto in = s.macro[s.idx++];
@@ -494,13 +494,13 @@ class $modify(VBBase, GJBaseGameLayer) {
 				s.injecting = false;
 			}
 		}
-		GJBaseGameLayer::processCommands(dt);
+		GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
 	}
 
 	void handleButton(bool down, int button, bool isP1) {
 		auto& s = vb::S();
 		if (!s.disabled && s.recording && !s.injecting && isPlay()) {
-			s.macro.push_back({m_gameState.m_currentProgress, down, button, isP1});
+			s.macro.push_back({static_cast<int>(m_gameState.m_currentProgress), down, button, isP1});
 		}
 		GJBaseGameLayer::handleButton(down, button, isP1);
 	}
@@ -538,7 +538,7 @@ class $modify(VBPlayLayer, PlayLayer) {
 	void resetLevel() {
 		PlayLayer::resetLevel();
 		auto& s = vb::S();
-		int f = m_gameState.m_currentProgress;
+		int f = static_cast<int>(m_gameState.m_currentProgress);
 		if (s.recording) {
 			s.macro.erase(std::remove_if(s.macro.begin(), s.macro.end(),
 				[f](vb::Input const& i) { return i.frame >= f; }), s.macro.end());
@@ -565,9 +565,7 @@ class $modify(VBPlayLayer, PlayLayer) {
 	void drawHitboxes() {
 		auto f = m_fields.self();
 		float px = m_player1->getPositionX();
-		CCObject* o;
-		CCARRAY_FOREACH(m_objects, o) {
-			auto obj = static_cast<GameObject*>(o);
+		for (auto obj : CCArrayExt<GameObject*>(m_objects)) {
 			if (std::abs(obj->getPositionX() - px) > 420.f) continue;
 			switch (obj->m_objectType) {
 				case GameObjectType::Hazard:
