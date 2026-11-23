@@ -788,4 +788,3 @@ class $modify(VBPlayLayer, PlayLayer) {
 		}
 	}
 };
-```[cite: 8]
