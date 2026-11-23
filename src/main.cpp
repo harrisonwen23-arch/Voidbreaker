@@ -31,12 +31,19 @@ namespace vb {
 		float btnScale = 1.f;
 		float hudScale = 0.6f;
 
+		int frame = 0;
 		bool recording = false;
 		bool playing = false;
 		bool injecting = false;
 		bool simulating = false;
 		size_t idx = 0;
 		std::vector<Input> macro;
+	};
+
+	struct SimGuard {
+		bool& flag;
+		explicit SimGuard(bool& f) : flag(f) { flag = true; }
+		~SimGuard() { flag = false; }
 	};
 
 	inline State& S() { static State s; return s; }
@@ -97,8 +104,10 @@ namespace vb {
 $on_mod(Loaded) { vb::load(); }
 
 static CCSprite* loadLogo() {
-	if (auto s = CCSprite::create("logo-voidbreaker.gif"_spr)) return s;
-	return CCSprite::create("logo-voidbreaker.png"_spr);
+	if (auto s = CCSprite::create("logo-voidbreaker.png"_spr)) {
+		if (s->getContentSize().width > 0.f) return s;
+	}
+	return nullptr;
 }
 
 // ----------------------------------------------------------------- menu ----
@@ -194,7 +203,6 @@ protected:
 
 		addText(m_mainLayer, "Created by harrison", {W / 2.f, H - 38.f}, .38f);
 
-		// left tabs
 		auto tabs = CCMenu::create();
 		tabs->setPosition({0.f, 0.f});
 		m_mainLayer->addChild(tabs, 3);
@@ -203,7 +211,6 @@ protected:
 			addButton(tabs, names[i], {58.f, H - 70.f - i * 42.f}, menu_selector(VBMenu::onTab), 80, i + 1);
 		}
 
-		// right buttons
 		auto right = CCMenu::create();
 		right->setPosition({0.f, 0.f});
 		m_mainLayer->addChild(right, 3);
@@ -216,7 +223,7 @@ protected:
 		// page 0: home / logo
 		m_pages[0] = newPage(menu);
 		if (auto logo = loadLogo()) {
-			logo->setScale(150.f / logo->getContentSize().width);
+			logo->setScale(140.f / logo->getContentSize().width);
 			logo->setPosition({W / 2.f, 120.f});
 			m_pages[0]->addChild(logo);
 		} else {
@@ -355,13 +362,13 @@ protected:
 	void onRecord(CCObject*) {
 		auto& s = vb::S();
 		s.recording = !s.recording;
-		if (s.recording) { s.playing = false; s.macro.clear(); }
+		if (s.recording) { s.playing = false; s.macro.clear(); s.idx = 0; }
 	}
 
 	void onPlayback(CCObject*) {
 		auto& s = vb::S();
 		s.playing = !s.playing;
-		if (s.playing) { s.recording = false; s.idx = 0; }
+		if (s.playing) { s.recording = false; vb::rewindMacro(s.frame); }
 	}
 
 	void onClear(CCObject*) { vb::S().macro.clear(); vb::S().idx = 0; }
@@ -387,7 +394,7 @@ protected:
 			return;
 		}
 		vb::deserialize(r.unwrap());
-		vb::S().idx = 0;
+		vb::rewindMacro(vb::S().frame);
 		Notification::create("Macro loaded", NotificationIcon::Success)->show();
 	}
 
@@ -463,8 +470,8 @@ class $modify(VBUILayer, UILayer) {
 	void onQuick(CCObject* o) {
 		auto& s = vb::S();
 		switch (static_cast<CCNode*>(o)->getTag()) {
-			case 1: s.recording = !s.recording; if (s.recording) { s.playing = false; s.macro.clear(); } break;
-			case 2: s.playing = !s.playing; if (s.playing) { s.recording = false; s.idx = 0; } break;
+			case 1: s.recording = !s.recording; if (s.recording) { s.playing = false; s.macro.clear(); s.idx = 0; } break;
+			case 2: s.playing = !s.playing; if (s.playing) { s.recording = false; vb::rewindMacro(s.frame); } break;
 			case 3: s.hitboxes = !s.hitboxes; break;
 			case 4: s.trajectory = !s.trajectory; break;
 		}
@@ -489,15 +496,17 @@ class $modify(VBBase, GJBaseGameLayer) {
 
 	void processCommands(float dt, bool isHalfTick, bool isLastTick) {
 		auto& s = vb::S();
-		if (!s.disabled && s.playing && isPlay()) {
-			int frame = static_cast<int>(m_gameState.m_currentProgress);
-			while (s.idx < s.macro.size() && s.macro[s.idx].frame < frame) s.idx++;
-			while (s.idx < s.macro.size() && s.macro[s.idx].frame == frame) {
-				auto in = s.macro[s.idx++];
-				s.injecting = true;
-				this->handleButton(in.down, in.button, in.p1);
-				s.injecting = false;
+		if (isPlay()) {
+			if (!s.disabled && s.playing) {
+				while (s.idx < s.macro.size() && s.macro[s.idx].frame < s.frame) s.idx++;
+				while (s.idx < s.macro.size() && s.macro[s.idx].frame == s.frame) {
+					auto in = s.macro[s.idx++];
+					s.injecting = true;
+					this->handleButton(in.down, in.button, in.p1);
+					s.injecting = false;
+				}
 			}
+			s.frame++;
 		}
 		GJBaseGameLayer::processCommands(dt, isHalfTick, isLastTick);
 	}
@@ -505,7 +514,7 @@ class $modify(VBBase, GJBaseGameLayer) {
 	void handleButton(bool down, int button, bool isP1) {
 		auto& s = vb::S();
 		if (!s.disabled && s.recording && !s.injecting && isPlay()) {
-			s.macro.push_back({static_cast<int>(m_gameState.m_currentProgress), down, button, isP1});
+			s.macro.push_back({s.frame, down, button, isP1});
 		}
 		GJBaseGameLayer::handleButton(down, button, isP1);
 	}
@@ -523,6 +532,7 @@ class $modify(VBPlayLayer, PlayLayer) {
 
 	void setupHasCompleted() {
 		PlayLayer::setupHasCompleted();
+		vb::S().frame = 0;
 		auto f = m_fields.self();
 		f->draw = CCDrawNode::create();
 		m_objectLayer->addChild(f->draw, 1000);
@@ -543,17 +553,17 @@ class $modify(VBPlayLayer, PlayLayer) {
 	void resetLevel() {
 		PlayLayer::resetLevel();
 		auto& s = vb::S();
-		int f = static_cast<int>(m_gameState.m_currentProgress);
+		s.frame = 0;
 		if (s.recording) {
-			s.macro.erase(std::remove_if(s.macro.begin(), s.macro.end(),
-				[f](vb::Input const& i) { return i.frame >= f; }), s.macro.end());
+			s.macro.clear();
+			s.idx = 0;
 		}
-		if (s.playing) vb::rewindMacro(f);
+		if (s.playing) vb::rewindMacro(0);
 	}
 
 	void destroyPlayer(PlayerObject* p, GameObject* g) {
 		if (vb::S().simulating) {
-			p->m_isDead = true;
+			if (p) p->m_isDead = true;
 			return;
 		}
 		PlayLayer::destroyPlayer(p, g);
@@ -593,6 +603,9 @@ class $modify(VBPlayLayer, PlayLayer) {
 		auto d = f->dummy;
 		if (!d || !m_player1 || m_player1->m_isDead) return;
 
+		constexpr float stepDt = 1.f / 240.f;
+		int steps = std::clamp((int)s.trajSteps, 10, 300);
+
 		for (int mode = 0; mode < 2; mode++) {
 			bool hold = (mode == 0);
 			auto cp = PlayerCheckpoint::create();
@@ -600,23 +613,29 @@ class $modify(VBPlayLayer, PlayLayer) {
 			d->loadFromCheckpoint(cp);
 			d->m_isDead = false;
 			d->setPosition(m_player1->getPosition());
+			d->setRotation(m_player1->getRotation());
 
 			std::vector<CCPoint> pts;
+			pts.reserve(steps + 1);
 			pts.push_back(d->getPosition());
-			s.simulating = true;
-			for (int i = 0; i < (int)s.trajSteps; i++) {
-				if (hold) d->pushButton(PlayerButton::Jump);
-				else d->releaseButton(PlayerButton::Jump);
-				d->update(1.f / 240.f);
-				this->checkCollisions(d, 1.f / 240.f, false);
-				pts.push_back(d->getPosition());
-				if (d->m_isDead) break;
+
+			{
+				vb::SimGuard guard(s.simulating);
+				for (int i = 0; i < steps; i++) {
+					if (hold) d->pushButton(PlayerButton::Jump);
+					else d->releaseButton(PlayerButton::Jump);
+					d->update(stepDt);
+					this->checkCollisions(d, stepDt, false);
+					pts.push_back(d->getPosition());
+					if (d->m_isDead) break;
+				}
 			}
-			s.simulating = false;
 			d->releaseButton(PlayerButton::Jump);
 
 			ccColor4F col = hold ? ccColor4F{.2f, 1.f, .3f, 1.f} : ccColor4F{1.f, .2f, .2f, 1.f};
-			for (size_t i = 1; i < pts.size(); i++) f->draw->drawSegment(pts[i - 1], pts[i], .8f, col);
+			for (size_t i = 1; i < pts.size(); i++) {
+				f->draw->drawSegment(pts[i - 1], pts[i], 1.f, col);
+			}
 			if (d->m_isDead) {
 				auto e = pts.back();
 				box(f->draw, CCRect(e.x - 15.f, e.y - 15.f, 30.f, 30.f), {1.f, 0.f, 0.f, 1.f});
@@ -644,7 +663,7 @@ class $modify(VBPlayLayer, PlayLayer) {
 		if (!s.disabled && s.hudMacro) {
 			txt += fmt::format("{}  frame {}  inputs {}",
 				s.recording ? "REC" : (s.playing ? "PLAY" : "IDLE"),
-				m_gameState.m_currentProgress, s.macro.size());
+				s.frame, s.macro.size());
 		}
 		f->hud->setVisible(!txt.empty());
 		if (!txt.empty()) {
