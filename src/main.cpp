@@ -18,6 +18,25 @@ using namespace geode::prelude;
 namespace vb {
 	struct Input { int frame; bool down; int button; bool p1; };
 
+	struct WindowEntry {
+		int startFrame = 0;
+		int endFrame = 0;
+		int frames = 0;
+		int gapFrames = 0;
+		int button = 0;
+		bool p1 = true;
+	};
+
+	struct WindowStats {
+		int count = 0;
+		int minFrames = 0;
+		int maxFrames = 0;
+		float avgFrames = 0.f;
+		int lastFrames = 0;
+		int lastGapFrames = 0;
+		std::vector<WindowEntry> entries;
+	};
+
 	struct State {
 		bool disabled = false;
 		bool hitboxes = false;
@@ -47,6 +66,67 @@ namespace vb {
 	};
 
 	inline State& S() { static State s; return s; }
+	inline WindowStats& W() { static WindowStats w; return w; }
+
+	inline void measureMacro() {
+		auto const& s = S();
+		auto& w = W();
+		w.entries.clear();
+		w.count = 0;
+		w.minFrames = 0;
+		w.maxFrames = 0;
+		w.avgFrames = 0.f;
+		w.lastFrames = 0;
+		w.lastGapFrames = 0;
+
+		if (s.macro.empty()) return;
+		w.entries.reserve(s.macro.size() / 2 + 1);
+
+		struct ActivePress {
+			bool active = false;
+			int startFrame = 0;
+			int lastReleaseFrame = -1;
+			bool hasReleased = false;
+		};
+		ActivePress press[2][8];
+
+		int totalFrames = 0;
+		for (auto const& in : s.macro) {
+			int pIdx = in.p1 ? 0 : 1;
+			int bIdx = std::clamp(in.button, 0, 7);
+			auto& slot = press[pIdx][bIdx];
+
+			if (in.down) {
+				if (!slot.active) {
+					slot.active = true;
+					slot.startFrame = in.frame;
+				}
+			} else if (slot.active) {
+				int win = std::max(1, in.frame - slot.startFrame);
+				int gap = slot.hasReleased ? std::max(0, slot.startFrame - slot.lastReleaseFrame) : 0;
+				w.entries.push_back({slot.startFrame, in.frame, win, gap, in.button, in.p1});
+
+				if (w.count == 0) {
+					w.minFrames = win;
+					w.maxFrames = win;
+				} else {
+					w.minFrames = std::min(w.minFrames, win);
+					w.maxFrames = std::max(w.maxFrames, win);
+				}
+				totalFrames += win;
+				w.count++;
+				w.lastFrames = win;
+				w.lastGapFrames = gap;
+				slot.lastReleaseFrame = in.frame;
+				slot.hasReleased = true;
+				slot.active = false;
+			}
+		}
+
+		if (w.count > 0) {
+			w.avgFrames = static_cast<float>(totalFrames) / static_cast<float>(w.count);
+		}
+	}
 
 	inline void load() {
 		auto m = Mod::get();
@@ -232,9 +312,9 @@ protected:
 
 		// page 1: replay
 		m_pages[1] = newPage(menu);
-		m_status = addText(m_pages[1], "", {W / 2.f, 175.f}, .4f);
+		m_status = addText(m_pages[1], "", {W / 2.f, 175.f}, .34f);
 		addButton(menu, "Clear macro", {W / 2.f, 120.f}, menu_selector(VBMenu::onClear), 110);
-		addText(m_pages[1], "Records every click per frame.", {W / 2.f, 75.f}, .3f);
+		addText(m_pages[1], "Measures click windows per frame.", {W / 2.f, 75.f}, .3f);
 
 		// page 2: hacks
 		m_pages[2] = newPage(menu);
@@ -327,11 +407,20 @@ protected:
 
 	void tick(float) {
 		auto& s = vb::S();
+		auto const& w = vb::W();
 		m_disBtn->setString(s.disabled ? "Enable" : "Disable");
 		m_recBtn->setString(s.recording ? "Stop rec" : "Record");
 		m_playBtn->setString(s.playing ? "Stop play" : "Playback");
 		auto state = s.recording ? "RECORDING" : (s.playing ? "PLAYING" : "IDLE");
-		m_status->setString(fmt::format("{} - {} inputs", state, s.macro.size()).c_str());
+		if (w.count > 0) {
+			float ms = (w.lastFrames * 1000.f) / std::max(1.f, s.tps);
+			m_status->setString(fmt::format(
+				"{} | {} win | last {}f ({:.1f}ms) | min {}f avg {:.1f}f",
+				state, w.count, w.lastFrames, ms, w.minFrames, w.avgFrames
+			).c_str());
+		} else {
+			m_status->setString(fmt::format("{} - {} inputs", state, s.macro.size()).c_str());
+		}
 	}
 
 	void onTab(CCObject* o) {
@@ -361,8 +450,16 @@ protected:
 
 	void onRecord(CCObject*) {
 		auto& s = vb::S();
+		bool wasRecording = s.recording;
 		s.recording = !s.recording;
-		if (s.recording) { s.playing = false; s.macro.clear(); s.idx = 0; }
+		if (s.recording) {
+			s.playing = false;
+			s.macro.clear();
+			s.idx = 0;
+			vb::W() = {};
+		} else if (wasRecording) {
+			vb::measureMacro();
+		}
 	}
 
 	void onPlayback(CCObject*) {
@@ -371,7 +468,11 @@ protected:
 		if (s.playing) { s.recording = false; vb::rewindMacro(s.frame); }
 	}
 
-	void onClear(CCObject*) { vb::S().macro.clear(); vb::S().idx = 0; }
+	void onClear(CCObject*) {
+		vb::S().macro.clear();
+		vb::S().idx = 0;
+		vb::W() = {};
+	}
 
 	void onSave(CCObject*) {
 		if (vb::S().macro.empty()) {
@@ -395,6 +496,7 @@ protected:
 		}
 		vb::deserialize(r.unwrap());
 		vb::rewindMacro(vb::S().frame);
+		vb::measureMacro();
 		Notification::create("Macro loaded", NotificationIcon::Success)->show();
 	}
 
@@ -470,7 +572,19 @@ class $modify(VBUILayer, UILayer) {
 	void onQuick(CCObject* o) {
 		auto& s = vb::S();
 		switch (static_cast<CCNode*>(o)->getTag()) {
-			case 1: s.recording = !s.recording; if (s.recording) { s.playing = false; s.macro.clear(); s.idx = 0; } break;
+			case 1: {
+				bool wasRecording = s.recording;
+				s.recording = !s.recording;
+				if (s.recording) {
+					s.playing = false;
+					s.macro.clear();
+					s.idx = 0;
+					vb::W() = {};
+				} else if (wasRecording) {
+					vb::measureMacro();
+				}
+				break;
+			}
 			case 2: s.playing = !s.playing; if (s.playing) { s.recording = false; vb::rewindMacro(s.frame); } break;
 			case 3: s.hitboxes = !s.hitboxes; break;
 			case 4: s.trajectory = !s.trajectory; break;
@@ -557,6 +671,7 @@ class $modify(VBPlayLayer, PlayLayer) {
 		if (s.recording) {
 			s.macro.clear();
 			s.idx = 0;
+			vb::W() = {};
 		}
 		if (s.playing) vb::rewindMacro(0);
 	}
@@ -661,9 +776,10 @@ class $modify(VBPlayLayer, PlayLayer) {
 			txt += fmt::format("FPS {:.0f}  TPS {:.0f}  x{:.2f}\n", f->fps, s.tps, s.speed);
 		}
 		if (!s.disabled && s.hudMacro) {
-			txt += fmt::format("{}  frame {}  inputs {}",
+			auto const& w = vb::W();
+			txt += fmt::format("{}  frame {}  inputs {}  win {}f (min {}f)",
 				s.recording ? "REC" : (s.playing ? "PLAY" : "IDLE"),
-				s.frame, s.macro.size());
+				s.frame, s.macro.size(), w.lastFrames, w.minFrames);
 		}
 		f->hud->setVisible(!txt.empty());
 		if (!txt.empty()) {
@@ -672,3 +788,4 @@ class $modify(VBPlayLayer, PlayLayer) {
 		}
 	}
 };
+```[cite: 8]
